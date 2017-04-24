@@ -1,4 +1,11 @@
+"""Compare runtimes of apriori and fp growth algorithms.
+
+Comparisons are run across datasets of varying characteristics.
+
+Compare to https://arxiv.org/abs/1701.09042
+"""
 import collections
+import multiprocessing
 from timeit import default_timer as timer
 
 import numpy as np
@@ -8,39 +15,54 @@ import apriori
 import dataset
 import fpgrowth
 
-SAVE_FILE = 'itemsize-grid.nc'
+MAX_TIME = 1800  # Cap each run to 30 minutes
+SAVE_FILE = 'itemsize-grid-small.nc'
 
-MIN_TRANSACTIONS = 10000
-MAX_TRANSACTIONS = 2000000
-TRANSACTION_STEPS = 1
+MIN_TRANSACTIONS = 100
+MAX_TRANSACTIONS = 2000
+TRANSACTION_STEPS = 10
 MIN_SUPPORT = .02
 MAX_SUPPORT = .4
 SUPPORT_STEPS = 1
 MIN_ITEMS = 20
 MAX_ITEMS = 300
-ITEMS_STEPS = 8
-MIN_BASKET_SIZE = 10
+ITEMS_STEPS = 3
+MIN_BASKET_SIZE = 15
 MAX_BASKET_SIZE = 50
-BASKET_STEPS = 4
+BASKET_STEPS = 1
 MIN_LIKELY = 5
-LIKELY_STEPS = 3
+LIKELY_STEPS = 1
 LIKELY_FRACTION_START = .2
-LIKELY_FRACTION_STEPS = 1
+LIKELY_FRACTION_STEPS = 3
 
+# MIN_TRANSACTIONS = 10000
+# MAX_TRANSACTIONS = 2000000
+# TRANSACTION_STEPS = 10
+# MIN_SUPPORT = .02
+# MAX_SUPPORT = .4
+# SUPPORT_STEPS = 1
+# MIN_ITEMS = 20
+# MAX_ITEMS = 300
+# ITEMS_STEPS = 3
+# MIN_BASKET_SIZE = 15
+# MAX_BASKET_SIZE = 50
+# BASKET_STEPS = 1
+# MIN_LIKELY = 5
+# LIKELY_STEPS = 1
+# LIKELY_FRACTION_START = .2
+# LIKELY_FRACTION_STEPS = 3
 
 Parameters = collections.namedtuple('Parameters',
                                     ['transactions', 'support', 'basket',
                                      'items', 'likely', 'likely_fraction'])
 
 
-def timed_itemset_mining(cls, transactions, support, reps=1):
-    results = []
-    for n in range(reps):
-        start = timer()
-        cls(transactions, support)
-        stop = timer()
-        results.append(stop - start)
-    return min(results)
+def timed_itemset_mining(cls, transactions, support, results, name):
+    start = timer()
+    cls(transactions, support)
+    stop = timer()
+    results[name] = stop - start
+    return stop - start
 
 
 def construct_dataset():
@@ -131,17 +153,35 @@ def translate(min, max, index, num_steps, convert=int):
     return convert(min + (max - min) * index / num_steps)
 
 
-def time_different_dims(data):
+def time_different_dims(data, max_time=10):
     for indices in index_iterator(data):
+        jobs = []
         params = get_run_params(*indices, data)
+        manager = multiprocessing.Manager()
+        return_dict = manager.dict()
         T = generate_transactions(params)
-        fp_time = timed_itemset_mining(fpgrowth.FpGrowth, T, params.support)
-        apriori_time = timed_itemset_mining(apriori.Apriori, T, params.support)
-        data['apriori'][Parameters(*indices)._asdict()] = apriori_time
-        data['fp_growth'][Parameters(*indices)._asdict()] = fp_time
+        fp_process = multiprocessing.Process(
+            target=timed_itemset_mining,
+            args=(fpgrowth.FpGrowth, T, params.support, return_dict, 'fp'))
+        jobs.append(('fp', fp_process))
+        apriori_process = multiprocessing.Process(
+            target=timed_itemset_mining,
+            args=(apriori.Apriori, T, params.support, return_dict, 'ap'))
+        jobs.append(('ap', apriori_process))
+        fp_process.start()
+        apriori_process.start()
+        apriori_process.join(max_time)
+        for name, job in jobs:
+            if job.is_alive():
+                print("Terminating {}".format(name))
+                job.terminate()
+                job.join()
+                return_dict[name] = max_time
+        data['apriori'][Parameters(*indices)._asdict()] = return_dict['ap']
+        data['fp_growth'][Parameters(*indices)._asdict()] = return_dict['fp']
 
 
 if __name__ == '__main__':
     data = construct_dataset()
-    time_different_dims(data)
+    time_different_dims(data, MAX_TIME)
     save(data, SAVE_FILE)

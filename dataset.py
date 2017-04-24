@@ -34,10 +34,10 @@ def construct(num_transactions,
     assert 1 <= likely_items < total_items
     assert 0 <= likely_draw <= 1.0
     data = []
-    for _ in range(num_transactions):
-        basket_size = random.randint(1, max_basket_size)
+    while len(data) < num_transactions:
+        basket_draws = random.randint(1, max_basket_size)
         basket = set()
-        while len(basket) < basket_size:
+        for _ in range(basket_draws):
             r = random.random()
             if r < likely_draw:
                 basket.add(random.randint(1, likely_items))
